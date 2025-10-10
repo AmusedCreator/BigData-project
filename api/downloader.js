@@ -2,9 +2,8 @@
 //  1) не хранить датасет на гите
 //  2) ускорить сборку данных
 //  3) собрать больше данных
-//  4) сделать адекватную portable версию скрипта
 const fs = require('fs');
-const axios = require('axios');
+const axios = require('axios'); //даунгред до 0.27
 
 const OUTPUT_FILE = '../dataset/hh_vacancies_all.json';
 const ID_FILE = '../dataset/hh_vacancies_all_ids.txt';
