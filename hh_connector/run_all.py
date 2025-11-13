@@ -43,6 +43,7 @@ def wait_for_mongo_ready(timeout_s=30):
             time.sleep(1)
     return False
 
+
 def main():
     # 1) если mongodb не распакована — запустить setup
     if not DB_MONGODB.exists():
@@ -69,12 +70,17 @@ def main():
     # Загружаем данные
     sys.path.insert(0, str(PROJECT / 'scripts'))
     from load_data import load_ndjson_to_mongo
-    ndjson_path = PROJECT / 'data' / 'vacancies_ib.ndjson'
+    ndjson_path = PROJECT / 'data' / 'vacancies_it.json'
     load_ndjson_to_mongo(str(ndjson_path))
     
     print('Данные загружены. Запускаю анализ...')
-    from scripts.analyze_data import analyze_all
-    analyze_all()
+    
+    from scripts.analyze_data import analyze_all as analyze_data1
+    analyze_data1()
+    from scripts.analyze_data29 import analyze_all as analyze_data29
+    analyze_data29()
+    from scripts.analyze_data3 import analyze_all as analyze_data3
+    analyze_data3()
     
     print('Всё выполнено. MongoDB остаётся запущенной. PID сохранён в', PID_FILE)
 
