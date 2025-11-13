@@ -1,8 +1,9 @@
-"""  
-Загружает NDJSON (один JSON-объект на строку) в коллекцию MongoDB.  
-- Работает пакетами (batch_size) — не держит весь файл в памяти.  
-- Создает уникальный индекс по полю 'id' и игнорирует дубликаты.  
-"""  
+"""
+Загружает JSON array (массив JSON-объектов) в коллекцию MongoDB.
+
+- Работает пакетами (batch_size) --- не держит весь файл в памяти.
+- Создает уникальный индекс по полю 'id' и игнорирует дубликаты.
+"""
 from db.mongo_connection import get_db  
 import json  
 from pymongo.errors import BulkWriteError
@@ -27,6 +28,8 @@ needed_fields = {
     "description",
     "key_skills",
     "published_at",
+    "employment_form",
+    "experience",
 }
 
 def filter_document(doc):
@@ -63,10 +66,10 @@ def filter_document(doc):
     
     return filtered
 
-def load_ndjson_to_mongo(file_path: str, collection_name: str = 'vacancies', batch_size: int = 300):  
-    db = get_db()  
-    coll = db[collection_name]  
-
+def load_ndjson_to_mongo(file_path: str, collection_name: str = 'vacancies', batch_size: int = 1000):
+    db = get_db()
+    coll = db[collection_name]
+    
     # Создаем уникальный индекс по полю 'id' (если его еще нет)
     try:
         coll.create_index('id', unique=True)
@@ -78,25 +81,23 @@ def load_ndjson_to_mongo(file_path: str, collection_name: str = 'vacancies', bat
     inserted = 0
     duplicates_skipped = 0
     batch = []
-    
-    with open(file_path, 'r', encoding='utf-8') as f:
-        for line_num, line in enumerate(f, 1):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                original_doc = json.loads(line)
-                # ФИЛЬТРУЕМ документ - оставляем только нужные поля
-                filtered_doc = filter_document(original_doc)
-                
-                # Пропускаем пустые документы (если нет ни одного нужного поля)
-                if not filtered_doc:
-                    continue
-                    
-            except Exception as e:
-                print(f'Не удалось распарсить строку {line_num}: {e}')
-                continue
+
+    try:
+        # Читаем и парсим весь файл как JSON массив
+        with open(file_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        
+        print(f"Загружено {len(data)} документов из JSON массива")
+        
+        # Обрабатываем каждый документ в массиве
+        for original_doc in data:
+            # ФИЛЬТРУЕМ документ - оставляем только нужные поля
+            filtered_doc = filter_document(original_doc)
             
+            # Пропускаем пустые документы (если нет ни одного нужного поля)
+            if not filtered_doc:
+                continue
+                
             batch.append(filtered_doc)
             total_processed += 1
             
@@ -106,20 +107,27 @@ def load_ndjson_to_mongo(file_path: str, collection_name: str = 'vacancies', bat
                 duplicates_skipped += duplicates_in_batch
                 batch = []
                 print(f"Обработано: {total_processed}, Вставлено: {inserted}, Дубликатов: {duplicates_skipped}")
-        
+
         # Вставляем остаток
         if batch:
             inserted_in_batch, duplicates_in_batch = _insert_batch(coll, batch)
             inserted += inserted_in_batch
             duplicates_skipped += duplicates_in_batch
 
-    print(f"Готово. Обработано строк: {total_processed}")
+    except json.JSONDecodeError as e:
+        print(f'Ошибка при парсинге JSON файла: {e}')
+        return
+    except Exception as e:
+        print(f'Общая ошибка при загрузке файла: {e}')
+        return
+
+    print(f"Готово. Обработано документов: {total_processed}")
     print(f"Вставлено документов: {inserted}, Пропущено дубликатов: {duplicates_skipped}")
-    
+
     # Проверяем математику
     if total_processed != (inserted + duplicates_skipped):
         print(f"Расхождение: {total_processed} != {inserted} + {duplicates_skipped}")
-    
+
     # Финальная проверка
     total_in_db = coll.count_documents({})
     print(f"Всего документов в коллекции: {total_in_db}")
@@ -149,5 +157,5 @@ if __name__ == '__main__':
         path = sys.argv[1]
     else:
         # Правильный путь к файлу данных
-        path = os.path.join('..', 'data', 'vacancies_ib.ndjson')
+        path = os.path.join('..', 'data', 'vacancies_it.json')
     load_ndjson_to_mongo(path)
