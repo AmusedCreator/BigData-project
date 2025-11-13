@@ -1,0 +1,1 @@
+py filter_it_vacancies.py --vacancies general_vac.json --outdir ./ --log log.log --verbose
