@@ -3,6 +3,7 @@
 
 - Работает пакетами (batch_size) --- не держит весь файл в памяти.
 - Создает уникальный индекс по полю 'id' и игнорирует дубликаты.
+- Загружает коллекцию vacancies и employers (vacancies по умолчанию; для employers нужно указывать имя коллекции и путь к файлу-источнику)
 """
 from db.mongo_connection import get_db  
 import json  
@@ -10,10 +11,11 @@ from pymongo.errors import BulkWriteError
 
 
 # Определяем нужные поля для загрузки
-needed_fields = {
+needed_fields_vacancies = {
     "id",
     "name",
     "area.name",
+    "employer.id",
     "employer.name",
     "employer.industry",
     "professional_roles",
@@ -32,11 +34,24 @@ needed_fields = {
     "experience",
 }
 
-def filter_document(doc):
+needed_fields_employers = {
+    "id",
+    "industries",
+    "description",
+}
+
+def filter_document(doc, collection_name):
     """Фильтрует документ, оставляя только нужные поля"""
+    
+    # Определяем нужные поля в зависимости от коллекции
+    if collection_name == 'vacancies':
+        needed_fields_current = needed_fields_vacancies
+    else:  # vacancies или другие коллекции по умолчанию
+        needed_fields_current = needed_fields_employers
+        
     filtered = {}
     
-    for field in needed_fields:
+    for field in needed_fields_current:
         # Обрабатываем вложенные поля (с точками)
         if '.' in field:
             # Для вложенных полей типа "area.name", "salary.from"
@@ -92,7 +107,7 @@ def load_ndjson_to_mongo(file_path: str, collection_name: str = 'vacancies', bat
         # Обрабатываем каждый документ в массиве
         for original_doc in data:
             # ФИЛЬТРУЕМ документ - оставляем только нужные поля
-            filtered_doc = filter_document(original_doc)
+            filtered_doc = filter_document(original_doc, collection_name)
             
             # Пропускаем пустые документы (если нет ни одного нужного поля)
             if not filtered_doc:
