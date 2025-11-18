@@ -70,8 +70,14 @@ def main():
     # Загружаем данные
     sys.path.insert(0, str(PROJECT / 'scripts'))
     from load_data import load_ndjson_to_mongo
-    ndjson_path = PROJECT / 'data' / 'vacancies_it.json'
-    load_ndjson_to_mongo(str(ndjson_path))
+    
+    # Загружаем вакансии
+    vacancies_path = PROJECT / 'data' / 'vacancies_it.json'
+    load_ndjson_to_mongo(str(vacancies_path))
+    
+    # Загружаем работодателей
+    employers_path = PROJECT / 'data' / 'employers.json'
+    load_ndjson_to_mongo(str(employers_path ), 'employers')
     
     print('Данные загружены. Запускаю анализ...')
     
