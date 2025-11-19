@@ -1,160 +1,303 @@
 #!/usr/bin/env python3
-# coding: utf-8
-
-"""
-filter_it_vacancies.py
-
-Пример использования:
-python filter_it_vacancies.py --vacancies hh_vacancies_all.json --outdir ./ --log log.log --verbose
-"""
+# -*- coding: utf-8 -*-
 
 import json
-import re
-import os
-import argparse
 import logging
-from typing import List, Dict, Any
+import argparse
+from pathlib import Path
+from typing import Iterable, Iterator
+from decimal import Decimal
+import datetime
 
-# -----------------------
-# Настройки ключевых слов
-# -----------------------
+
+# --- (ваши константы без изменений) ---
+IT_ROLE_IDS = {
+    "10","25","36","96","104","107","112","113","114","116",
+    "121","124","125","126","148","150","156","160","163","164","165"
+}
+ROLE_40_ID = "40"
 IT_KEYWORDS = [
-    # роли / должности
-    "разработчик", "программист",
-    "инженер-программист", "разработчик мобильных приложений",
-    "frontend", "frontend-разработчик", "фронтенд", "фронтэнд",
-    "backend", "backend-разработчик", "бэкенд",
-    "fullstack", "full-stack", "full stack", "фуллстек", "фулл-стек",
-    "devops", "системный администратор", "системный админ", "системныйадминистратор",
-    "qa", "тестировщик", "тестировщица", "инженер по тестированию",
-    "аналитик данных", "data analyst", "data scientist", "мастер данных",
-    "машинного обучения", "машинное обучение", "ml", "искусственный интеллект",
-    # языки и технологии (часто пишут латиницей)
-    "python", "java", "javascript", "js", "c#", "c\\+\\+", "php", "golang", "go",
-    "ruby", "scala", "kotlin", "swift", "android", "ios",
-    # фреймворки и инструменты
-    "django", "flask", "react", "angular", "vue", "node", "nodejs", "node.js",
-    "sql", "postgres", "postgresql", "mysql", "mongodb", "nosql",
-    "docker", "kubernetes", "k8s",
-    # общие IT-термины
-    "embedded", "firmware", "devops", "ci/cd", "continuous integration",
-    "selenium", "rest", "api", "graphql"
+    "программист",  "software engineer", "software developer",
+    "frontend", "backend", "fullstack", "web developer", "mobile developer",
+    "android", "ios", "flutter", "react native",
+    "devops", "dev ops", "sre", "site reliability engineer",
+    "docker", "kubernetes", "k8s", "ansible", "terraform",
+    "ci/cd", "jenkins", "gitlab ci", "github actions",
+    "aws", "azure", "gcp", "cloud engineer", "cloud architect",
+    "data scientist", "data science", "machine learning", "deep learning",
+    "ai engineer", "ml engineer", "data engineer", "big data", "hadoop", "spark",
+    "pytorch", "tensorflow",
+    "qa engineer", "qa automation", "quality assurance", "тестировщик", "тестирование",
+    "automation engineer", "selenium", "pytest", "unit test",
+    "системный администратор", "system administrator", "system engineer",
+    "сетевой инженер", "network engineer", "сетевой администратор",
+    "информационная безопасность", "cybersecurity", "security engineer", "security analyst",
+    "pentester", "ethical hacker", "soc analyst",
+    "python", "java", "javascript", "typescript", "c\\+\\+", "c#", "csharp",
+    "go", "golang", "php", "ruby", "rust", "kotlin", "swift", "scala",
+    "sql", "mysql", "postgres", "postgresql", "mongodb", "redis",
+    "linux", "unix", "bash", "powershell", "windows server",
+    "react", "vue", "angular", "node.js", "express", "django", "flask", "fastapi",
+    "spring boot", "laravel", "symfony", "asp.net", "wpf",
+    "api developer", "backend engineer", "frontend engineer",
+    "software architect", "solution architect", "technical writer",
+    "test automation", "test engineer",
+    "product analyst", "product manager it", "it project manager",
+    "scrum master", "agile coach"
 ]
+# --- end constants ---
+
+def _json_default(obj):
+    """
+    Преобразует Decimal, datetime, bytes, set в сериализуемые типы.
+    При необходимости замените float(obj) на str(obj) для сохранения точности.
+    """
+    if isinstance(obj, Decimal):
+        # Если хотите сохранить точность - используйте str(obj) вместо float(obj)
+        return float(obj)
+    if isinstance(obj, (datetime.datetime, datetime.date)):
+        return obj.isoformat()
+    if isinstance(obj, bytes):
+        return obj.decode("utf-8", "replace")
+    if isinstance(obj, set):
+        return list(obj)
+    raise TypeError(f"Type {obj.__class__.__name__} not serializable")
 
 
-def compile_pattern(keywords: List[str]) -> re.Pattern:
-    cleaned = []
-    seen = set()
-    for kw in keywords:
-        if not kw:
-            continue
-        s = kw.strip()
-        if not s or s in seen:
-            continue
-        seen.add(s)
-        cleaned.append(re.escape(s))
-    if not cleaned:
-        return re.compile(r'(?!x)x')
-    pattern = r'\b(?:' + '|'.join(cleaned) + r')\b'
-    return re.compile(pattern, flags=re.IGNORECASE | re.UNICODE)
+def _normalize_role_id(role_id):
+    if role_id is None:
+        return None
+    return str(role_id)
 
 
-PATTERN = compile_pattern(IT_KEYWORDS)
+def vacancy_has_role(vacancy: dict, role_id: str) -> bool:
+    roles = vacancy.get("professional_roles") or vacancy.get("professions") or []
+    if not isinstance(roles, list):
+        return False
+    for r in roles:
+        rid = _normalize_role_id(r.get("id")) if isinstance(r, dict) else _normalize_role_id(r)
+        if rid == role_id:
+            return True
+    return False
 
 
-def load_vacancies(path: str) -> List[Dict[str, Any]]:
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    if isinstance(data, dict) and "items" in data and isinstance(data["items"], list):
-        return data["items"]
-    if isinstance(data, list):
-        return data
-    if isinstance(data, dict):
-        vals = list(data.values())
-        if vals and isinstance(vals[0], dict):
-            return vals
-    raise ValueError("Не удалось распознать структуру JSON (ожидается список или объект с 'items').")
+def vacancy_has_it_role(vacancy: dict, allowed_ids: Iterable[str]) -> bool:
+    roles = vacancy.get("professional_roles") or vacancy.get("professions") or []
+    if not isinstance(roles, list):
+        return False
+    for r in roles:
+        if isinstance(r, dict):
+            rid = _normalize_role_id(r.get("id"))
+        else:
+            rid = _normalize_role_id(r)
+        if rid and rid in allowed_ids:
+            return True
+    return False
 
 
-def get_text_for_search(v: Dict[str, Any]) -> str:
-    parts = []
-    for key in ("name", "title", "description"):
-        if key in v and v[key]:
-            parts.append(str(v[key]))
-    ks = v.get("key_skills") or v.get("skills")
-    if isinstance(ks, list):
-        parts.extend(str(x.get("name") if isinstance(x, dict) else x) for x in ks)
-    for key in ("specializations", "professional_roles"):
-        val = v.get(key)
-        if val:
-            if isinstance(val, list):
-                parts.extend(str(x.get("name") if isinstance(x, dict) else x) for x in val)
-            else:
-                parts.append(str(val))
-    emp = v.get("employer")
-    if isinstance(emp, dict) and emp.get("name"):
-        parts.append(str(emp.get("name")))
-    area = v.get("area")
-    if isinstance(area, dict) and area.get("name"):
-        parts.append(str(area.get("name")))
-    if not parts:
-        parts.append(json.dumps(v, ensure_ascii=False))
-    return " ".join(parts)
+def is_it_by_text(vacancy: dict, logger: logging.Logger = None) -> bool:
+    pieces = []
+    pieces.append(vacancy.get("name") or "")
+    snippet = vacancy.get("snippet") or {}
+    pieces.append(snippet.get("requirement") or "")
+    pieces.append(snippet.get("responsibility") or "")
+    pieces.append(vacancy.get("description") or "")
+    skills = vacancy.get("key_skills") or []
+    if isinstance(skills, list):
+        pieces.extend([s.get("name", "") if isinstance(s, dict) else str(s) for s in skills])
+    employer = vacancy.get("employer") or {}
+    pieces.append(employer.get("name") or "")
+    text = " ".join([str(p) for p in pieces if p]).lower()
+    for kw in IT_KEYWORDS:
+        plain_kw = kw.replace("\\", "").lower()
+        if plain_kw in text:
+            if logger:
+                logger.debug("Match keyword '%s' in vacancy id=%s", plain_kw, vacancy.get("id"))
+            return True
+    return False
 
 
-def is_it(vac: Dict[str, Any], pattern: re.Pattern) -> bool:
-    txt = get_text_for_search(vac)
-    return bool(pattern.search(txt))
+def stream_vacancies(filename: Path, logger: logging.Logger) -> Iterator[dict]:
+    """
+    Итеративно возвращает объекты вакансий из файла.
+    Поддерживает:
+      - NDJSON (одна JSON-объект на строку) — читаем построчно
+      - Большой JSON-массив / {items: [...]} — через ijson (рекомендуется ставить ijson)
+    """
+    filesize = filename.stat().st_size
+    logger.info("stream_vacancies: file=%s size=%d bytes", filename, filesize)
+
+    with filename.open("r", encoding="utf-8") as f:
+        # пробуем определить формат по первым 1024 байтам
+        sample = f.read(1024)
+        f.seek(0)
+        s = sample.lstrip()
+        if not s:
+            logger.warning("Входной файл пуст.")
+            return
+
+        # Если выглядит как JSON-массив/объект (начинается с '[' или '{'), попробуем потоковый парсер ijson
+        if s.startswith("[") or s.startswith("{"):
+            try:
+                import ijson  # потоковый парсер
+                # если это объект с ключом items: use 'items.item', иначе топ-уровнев массив -> 'item'
+                # но ijson.items(f, 'item') всегда переберёт элементы массива; для 'items.item' — элементы в items
+                # Для универсальности попробуем сначала items.item, затем fallback на item
+                f.seek(0)
+                # detect top-level token (very small peek)
+                if s.startswith("{"):
+                    # попробуем items.item (obj with items key)
+                    try:
+                        for obj in ijson.items(f, 'items.item'):
+                            yield obj
+                        # если итератор пустой (нет items), нужно попробовать найти массив на верхнем уровне:
+                        f.seek(0)
+                        for obj in ijson.items(f, 'item'):
+                            yield obj
+                    except Exception:
+                        # fallback: ищем любой list на верхнем уровне (может бросить)
+                        f.seek(0)
+                        for prefix, event, value in ijson.parse(f):
+                            # не реализуем сложную логику — пробуем простой items.item и item выше
+                            pass
+                else:
+                    # начинаеся с '[' — читаем элементы массива
+                    f.seek(0)
+                    for obj in ijson.items(f, 'item'):
+                        yield obj
+                return
+            except ImportError:
+                logger.warning("ijson не установлен — если файл большой JSON-массив, это может вызвать MemoryError. Установите 'ijson' для потокового парсинга.")
+            except Exception as e:
+                logger.warning("ijson не смог распарсить файл (интеллектуальный fallback): %s", e)
+                # будем пробовать дальше — но не будем пытаться json.load для огромного файла
+
+        # Если не JSON-массив/объект или ijson недоступен — пробуем NDJSON построчно
+        f.seek(0)
+        for i, line in enumerate(f, start=1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+                yield obj
+            except json.JSONDecodeError:
+                logger.warning("Строка %d не валидный JSON — пропускаю.", i)
+                continue
+
+
+def vacancy_matches(vac: dict, args, logger: logging.Logger) -> bool:
+    try:
+        if vacancy_has_it_role(vac, IT_ROLE_IDS):
+            return True
+        if vacancy_has_role(vac, ROLE_40_ID):
+            if args.role40_include_all:
+                logger.debug("Включаю вакансию id=%s поскольку role 40 и --role-40-include-all", vac.get("id"))
+                return True
+            if args.role40_by_keyword:
+                if is_it_by_text(vac, logger):
+                    logger.debug("Включаю вакансию id=%s поскольку role 40 и найдено IT-совпадение по тексту", vac.get("id"))
+                    return True
+                else:
+                    logger.debug("Пропускаю вакансию id=%s с role 40 — IT-ключевые слова не найдены", vac.get("id"))
+                    return False
+        return False
+    except Exception as e:
+        logger.warning("Ошибка при проверке вакансии id=%s: %s", vac.get("id"), e)
+        return False
+
+
+def stream_filter_and_save(input_path: Path, out_path: Path, ndjson: bool, args, logger: logging.Logger):
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    total_in = 0
+    total_matched = 0
+
+    if ndjson:
+        with out_path.open("w", encoding="utf-8") as fout:
+            for vac in stream_vacancies(input_path, logger):
+                total_in += 1
+                if vacancy_matches(vac, args, logger):
+                    fout.write(json.dumps(vac, ensure_ascii=False, default=_json_default) + "\n")
+                    total_matched += 1
+                    if total_matched % 1000 == 0:
+                        logger.info("Matched %d vacancies so far...", total_matched)
+    else:
+        # записываем потоково в JSON-массив: [item, item, ...]
+        with out_path.open("w", encoding="utf-8") as fout:
+            fout.write("[\n")
+            first = True
+            for vac in stream_vacancies(input_path, logger):
+                total_in += 1
+                if vacancy_matches(vac, args, logger):
+                    if not first:
+                        fout.write(",\n")
+                    fout.write(json.dumps(vac, ensure_ascii=False, indent=2, default=_json_default))
+                    first = False
+                    total_matched += 1
+                    if total_matched % 1000 == 0:
+                        logger.info("Matched %d vacancies so far...", total_matched)
+            fout.write("\n]\n")
+
+    logger.info("Обработано входных записей: %d, отобрано: %d", total_in, total_matched)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Filter IT vacancies (simple).")
-    parser.add_argument("--vacancies", "-v", required=True, help="JSON файл вакансий")
-    parser.add_argument("--outdir", "-o", default="output", help="Папка вывода")
-    parser.add_argument("--log", "-l", default=None, help="Путь к лог файлу (по умолчанию <outdir>/filter_it.log)")
-    parser.add_argument("--verbose", "-V", action="store_true", help="Включить подробный DEBUG лог")
+    parser = argparse.ArgumentParser(description="Фильтр вакансий hh.ru по IT professional_roles (учитывает role 40).")
+    parser.add_argument("--input", "-i", type=str, default="hh_vacancies_all.json",
+                        help="Путь к входному файлу (JSON / NDJSON / API-ответ).")
+    parser.add_argument("--output-name", "-o", type=str, default="hh_vacancies_it.json",
+                        help="Имя выходного файла (по умолчанию hh_vacancies_it.json).")
+    parser.add_argument("--output-dir", "-d", type=str, default=".",
+                        help="Папка для сохранения выходного файла (по умолчанию текущая).")
+    parser.add_argument("--log-file", "-l", type=str, default="filter_it_vacancies.log",
+                        help="Путь к файлу лога (по умолчанию filter_it_vacancies.log).")
+    parser.add_argument("--log-level", type=str, choices=["DEBUG","INFO","WARNING","ERROR"], default="INFO",
+                        help="Уровень логирования (DEBUG/INFO/WARNING/ERROR).")
+    parser.add_argument("--ndjson", action="store_true",
+                        help="Сохранить результат в NDJSON (одна вакансия на строку).")
+    parser.add_argument("--role-40-by-keyword", dest="role40_by_keyword", action="store_true",
+                        help="Если у вакансии роль 40 (Другое), считать её IT только если в текстах найдены IT-ключевые слова (по умолчанию).")
+    parser.add_argument("--role-40-include-all", dest="role40_include_all", action="store_true",
+                        help="Включать все вакансии с ролью 40 без дополнительной текстовой проверки (опасно — может добавить нерелевантные вакансии).")
+    parser.set_defaults(role40_by_keyword=True, role40_include_all=False)
+
     args = parser.parse_args()
 
-    os.makedirs(args.outdir, exist_ok=True)
-    log_path = args.log if args.log else os.path.join(args.outdir, "filter_it.log")
+    # Настройка логирования
+    log_path = Path(args.log_file)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
 
-    log_level = logging.DEBUG if args.verbose else logging.INFO
-    logging.basicConfig(
-        level=log_level,
-        format="%(asctime)s %(levelname)s: %(message)s",
-        handlers=[
-            logging.FileHandler(log_path, encoding="utf-8"),
-            logging.StreamHandler()
-        ]
-    )
-    logger = logging.getLogger("filter_it_simple")
+    logger = logging.getLogger("filter_it_vacancies")
+    logger.setLevel(getattr(logging, args.log_level))
+    formatter = logging.Formatter("%(asctime)s %(levelname)s: %(message)s", "%Y-%m-%d %H:%M:%S")
+
+    fh = logging.FileHandler(log_path, encoding="utf-8")
+    fh.setLevel(getattr(logging, args.log_level))
+    fh.setFormatter(formatter)
+    logger.addHandler(fh)
+
+    ch = logging.StreamHandler()
+    ch.setLevel(logging.INFO)
+    ch.setFormatter(formatter)
+    logger.addHandler(ch)
+
+    logger.info("Запуск фильтра. Input=%s output_dir=%s output_name=%s ndjson=%s log_file=%s role40_by_keyword=%s role40_include_all=%s",
+                args.input, args.output_dir, args.output_name, args.ndjson, args.log_file, args.role40_by_keyword, args.role40_include_all)
+
+    input_path = Path(args.input)
+    if not input_path.exists():
+        logger.error("Входной файл не найден: %s", input_path)
+        return
+
+    out_path = Path(args.output_dir) / args.output_name
 
     try:
-        logger.info("Start. vacancies=%s", args.vacancies)
-        vacancies = load_vacancies(args.vacancies)
-        logger.info("Loaded %d vacancies", len(vacancies))
-
-        selected = []
-
-        for vac in vacancies:
-            try:
-                if is_it(vac, PATTERN):
-                    selected.append(vac)
-            except Exception as e:
-                vid = vac.get("id") or vac.get("vacancy_id") or vac.get("vacancyId")
-                logger.error("Ошибка при проверке вакансии %s: %s", vid or "<no-id>", e)
-
-        # сохранить JSON только
-        out_json = os.path.join(args.outdir, "vacancies_it.json")
-        with open(out_json, "w", encoding="utf-8") as f:
-            json.dump(selected, f, ensure_ascii=False, indent=2)
-
-        logger.info("Saved %d IT vacancies -> %s", len(selected), out_json)
-        logger.info("Finished successfully.")
+        stream_filter_and_save(input_path, out_path, args.ndjson, args, logger)
     except Exception as e:
-        logger.error("Fatal error: %s", e, exc_info=False)
-        raise
+        logger.exception("Ошибка при обработке: %s", e)
+        return
 
+    logger.info("Фильтрация завершена.")
 
 if __name__ == "__main__":
     main()

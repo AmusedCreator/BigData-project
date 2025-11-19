@@ -28,7 +28,7 @@ def _extract_directions(vacancy: dict) -> List[str]:
     if roles:
         names = []
         for r in roles:
-            if isinstance(r, dict) and 'name' in r:
+            if isinstance(r, dict) and 'name' in r and r['name'] != "Другое":
                 names.append(r['name'])
             elif isinstance(r, str):
                 names.append(r)

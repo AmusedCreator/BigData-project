@@ -1,4 +1,4 @@
-# --- улучшённая версия: specialization_skills_analysis_refined ---
+# --- улучшённая версия: specialization_skills_analysis_refined (с фильтром professional_roles.id)
 import re
 import math
 from collections import Counter, defaultdict
@@ -31,7 +31,7 @@ TECH_WHITELIST = {
     'python','java','c++','c#','c','sql','linux','aws','azure','gcp','docker',
     'kubernetes','k8s','splunk','elk','elasticsearch','kibana','wireshark','nmap',
     'metasploit','nessus','burpsuite','burp','firewall','iptables','snort','suricata',
-    'tcp','udp','http','https','ssh','smb','ldap','rdp','sqlserver','postgresql','mysql',
+    'tcp','udp','ssh','smb','ldap','rdp','sqlserver','postgresql','mysql',
     'git','ansible','terraform','powershell','bash','perl','ruby','go','golang','scala'
 }
 
@@ -90,21 +90,26 @@ def _normalize_skill_item(x):
     return str(x)
 
 def specialization_skills_analysis_plot(save_png='spec_skills_refined.png',
-                                          save_csv='spec_skills_refined.csv',
                                           top_specializations=8,
                                           top_k_terms=12,
                                           min_docs_per_spec=5,
                                           keyskill_weight=10,
-                                          ubiquity_thresh=0.6):
+                                          ubiquity_thresh=0.6,
+                                          professional_role_id='116'):
     """
-    Улучшённый анализ навыков по специализациям.
+    Улучшённый анализ навыков по специализациям с дополнительной фильтрацией по professional_roles.id.
+    - professional_role_id: строковый идентификатор роли (по умолчанию '116').
     - keyskill_weight: вес для явно указанных key_skills (по умолчанию = 10)
     - ubiquity_thresh: удаляем термины, которые встречаются в >= ubiquity_thresh доле выбранных специализаций,
       если только они не в TECH_WHITELIST.
     """
     db = get_db()
     coll = db['vacancies']
-    cursor = coll.find({}, {'specializations':1, 'key_skills':1, 'description':1, 'snippet':1})
+
+    # Фильтр по профессиональной роли — добавлено как запрос перед чтением документов
+    query = {"professional_roles.id": professional_role_id}
+    projection = {'specializations':1, 'key_skills':1, 'description':1, 'snippet':1}
+    cursor = coll.find(query, projection)
 
     # Группируем документы по специализациям
     spec_docs = defaultdict(list)
@@ -236,9 +241,6 @@ def specialization_skills_analysis_plot(save_png='spec_skills_refined.png',
         print("После фильтрации не осталось характерных терминов — попробуйте уменьшить ubiquity_thresh или min_docs_per_spec.")
         return
 
-    # Сохраняем CSV
-    df_out.to_csv(save_csv, index=False)
-    print("Сохранён refined CSV:", save_csv)
 
     # Рисуем панели: по одной специализации — горизонтальный barh
     n = len(selected_specs)
@@ -257,7 +259,7 @@ def specialization_skills_analysis_plot(save_png='spec_skills_refined.png',
             continue
         sub = sub.sort_values('score', ascending=True)
         ax.barh(sub['term'], sub['score'])
-        ax.set_title(f"{spec} (n={spec_counts.get(spec,0)})")
+        ax.set_title(f"Навыки и технологии наиболее характерны для разных специализаций")
         ax.set_xlabel('взвешенная частота (key_skills вес=10)')
         ax.tick_params(axis='y', labelsize=9)
 

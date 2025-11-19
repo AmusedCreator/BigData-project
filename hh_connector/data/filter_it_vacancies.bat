@@ -1,1 +1,1 @@
-py filter_it_vacancies.py --vacancies general_vac.json --outdir ./ --log log.log --verbose
+python filter_it_vacancies.py -i hh_vacancies_all.json -d ./ -o vacancies_it.json -l filter_it_vacancies.log

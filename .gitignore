@@ -1,4 +1,15 @@
 /api/findlast.js
-/dataset/employers
-/dataset/vacancies
 /dataset/dataset.rar
+/hh_connector/mongo_data
+/hh_connector/db/mongodb-win32-x86_64-windows-8.2.1
+/hh_connector/db/mongodb
+/hh_connector/db/__pycache__
+/hh_connector/db/mongodb.zip
+/hh_connector/scripts/__pycache__
+hh_connector/mongo.log
+hh_connector/mongo.pid
+hh_connector/mongo.log
+hh_connector/data/vacancies_it.json
+hh_connector/*.png
+hh_connector/data/employers.json
+hh_connector/data/filter_it_vacancies.log
