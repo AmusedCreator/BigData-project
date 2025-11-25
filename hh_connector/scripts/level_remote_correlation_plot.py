@@ -191,14 +191,13 @@ def level_remote_correlation_plot(save_path: str = 'level_remote_correlation.png
     xs = np.linspace(min(levels), max(levels), 100)
     ax.plot(xs, poly1d_fn(xs), linestyle='--', label='Линейный тренд')
 
-    ax.set_xlabel('Уровень позиции (0=Intern ... 5=Manager/Director)')
+    ax.set_xlabel('Уровень позиции (0=Intern, 1=Junior, 2=Middle, 3=Senior, 4=Lead, 5=Manager/Director)')
     ax.set_ylabel('Доля вакансий с remote')
     ax.set_title('Корреляция уровня позиции и вероятности предложения удалённой работы')
     ax.set_xticks(levels)
     ax.set_ylim(0, 1)
     ax.grid(axis='y', alpha=0.3)
     ax.legend()
-
     # подпись с метриками
     text_stats = f"Pearson r ≈ {r:.3f}" + (f", p-value = {p_value:.3e}" if p_value is not None else "")
     ax.text(0.01, 0.01, text_stats, transform=ax.transAxes, fontsize=9, verticalalignment='bottom')
