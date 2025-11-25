@@ -83,8 +83,8 @@ def main():
     
     from scripts.analyze_data import analyze_all as analyze_data1
     analyze_data1()
-    from scripts.analyze_data29 import analyze_all as analyze_data29
-    analyze_data29()
+    from scripts.analyze_data_29 import analyze_all as analyze_data_29
+    analyze_data_29()
     from scripts.analyze_data3 import analyze_all as analyze_data3
     analyze_data3()
     
