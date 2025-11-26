@@ -124,14 +124,21 @@ def experience_levels_plot(save_path: str = 'experience_levels.png'):
     plt.close()
 
 
-def forecast_cybersecurity_demand(save_path: str = 'forecast_cybersecurity.png'):
+def forecast_cybersecurity_demand_0(save_path: str = 'forecast_cybersecurity.png'):
     db = get_db()
     coll = db['vacancies']
 
-    cursor = coll.find(
+    """cursor = coll.find(
         {'professional_roles.id': '116'},
         {'published_at': 1}
-    ).sort('published_at', 1)
+    ).sort('published_at', 1)"""
+    cursor = coll.find({
+        'professional_roles.id': '116',
+        'published_at': {
+            '$gte': '2022-01-01T00:00:00',
+            '$lte': '2025-12-31T23:59:59'
+        }
+    }, {'published_at': 1}).sort('published_at', 1)
 
     dates = []
     for doc in cursor:
@@ -299,7 +306,8 @@ def forecast_cybersecurity_demand(save_path: str = 'forecast_cybersecurity.png')
 
             for i in range(1, max_diffs + 1):
                 diff_series = ts.diff(i).dropna()
-                adf_test, is_stationary = check_stationarity(diff_series, f"Ряд после {i}-го дифференцирования")
+                #adf_test, is_stationary = check_stationarity(diff_series, f"Ряд после {i}-го дифференцирования")
+                adf_test, is_stationary = check_stationarity(diff_series)
 
                 if is_stationary:
                     stationary_series = diff_series
@@ -933,7 +941,413 @@ def forecast_cybersecurity_demand(save_path: str = 'forecast_cybersecurity.png')
     build_ets_forecast(results)
 
 
+def forecast_cybersecurity_demand(save_path: str = 'forecast_cybersecurity.png'):
+    db = get_db()
+    coll = db['vacancies']
 
+    cursor = coll.find({
+        'professional_roles.id': '116',
+        'published_at': {
+            '$gte': '2022-01-01T00:00:00',
+            '$lte': '2025-07-31T23:59:59'  # Данные до конца июля 2025
+        }
+    }, {'published_at': 1}).sort('published_at', 1)
+
+    dates = []
+    for doc in cursor:
+        if 'published_at' in doc and doc['published_at']:
+            dates.append(doc['published_at'])
+
+    def make_data(dates):
+        # Создаем DataFrame
+        df = pd.DataFrame({'date': dates})
+        df['date'] = pd.to_datetime(df['date'])
+
+        # АГРЕГАЦИЯ: Группировка по месяцам без использования .dt аксессора
+        # Преобразуем даты в строки формата 'YYYY-MM-01' для группировки по месяцам
+        df['month_key'] = df['date'].apply(lambda x: x.strftime('%Y-%m-01'))
+
+        # Группируем по месячному ключу и считаем количество
+        monthly_counts = df.groupby('month_key').size().reset_index(name='vacancy_count')
+
+        # Преобразуем обратно в datetime
+        monthly_counts['date'] = pd.to_datetime(monthly_counts['month_key'])
+        monthly_counts = monthly_counts[['date', 'vacancy_count']]
+
+        # ОЧИСТКА: Проверка на выбросы
+        if len(monthly_counts) > 0:
+            Q1 = monthly_counts['vacancy_count'].quantile(0.25)
+            Q3 = monthly_counts['vacancy_count'].quantile(0.75)
+            IQR = Q3 - Q1
+            lower_bound = Q1 - 1.5 * IQR
+            upper_bound = Q3 + 1.5 * IQR
+
+            outliers_mask = (monthly_counts['vacancy_count'] < lower_bound) | (
+                    monthly_counts['vacancy_count'] > upper_bound)
+            outliers_count = outliers_mask.sum()
+
+            print(f"Найдено выбросов: {outliers_count}")
+
+            # Сглаживание выбросов
+            if outliers_count > 0:
+                # Простое сглаживание - заменяем выбросы медианным значением
+                median_val = monthly_counts['vacancy_count'].median()
+                monthly_counts.loc[outliers_mask, 'vacancy_count'] = median_val
+                print("Выбросы сглажены")
+
+        # СОЗДАНИЕ ВРЕМЕННОГО РЯДА
+        time_series = monthly_counts.sort_values('date').reset_index(drop=True)
+
+        """print(f"Создан временной ряд с {len(time_series)} месячными наблюдениями")
+        print("Первые 5 записей:")
+        print(time_series.head())"""
+        return time_series
+
+    time_series = make_data(dates)
+
+    def exploratory_data_analysis_ts(data):
+        """
+        Проводит разведочный анализ временного ряда с автоматической обработкой нестационарности.
+        """
+
+        # Создаем копию данных и устанавливаем дату как индекс
+        date_col = 'date'
+        value_col = 'vacancy_count'
+        period = 12
+        max_diffs = 3
+        df = data.copy()
+        df[date_col] = pd.to_datetime(df[date_col])
+        df = df.set_index(date_col)
+
+        # ИСПРАВЛЕНИЕ: Устанавливаем частоту временного ряда
+        ts = df[value_col].asfreq('MS')  # Monthly Start frequency
+
+        # Заполняем пропущенные месяцы нулями
+        ts = ts.fillna(0)
+
+        results = {}
+
+        try:
+            decomposition = seasonal_decompose(ts, model='additive', period=period, extrapolate_trend='freq')
+
+            trend_strength = 1 - (decomposition.resid.var() / (decomposition.trend + decomposition.resid).var())
+            seasonal_strength = 1 - (decomposition.resid.var() / (decomposition.seasonal + decomposition.resid).var())
+
+            # Сохраняем компоненты декомпозиции
+            results['decomposition'] = {
+                'trend': decomposition.trend,
+                'seasonal': decomposition.seasonal,
+                'residual': decomposition.resid,
+                'trend_strength': trend_strength,
+                'seasonal_strength': seasonal_strength
+            }
+
+        except Exception as e:
+            print(f"Ошибка при декомпозиции: {e}")
+            results['decomposition'] = None
+
+        def check_stationarity(series):
+            """Проверяет стационарность ряда с помощью теста Дики-Фуллера"""
+            adf_test = adfuller(series.dropna())
+            is_stationary = adf_test[1] <= 0.05
+
+            if not is_stationary:
+                print(
+                    f"  Критические значения: 1%={adf_test[4]['1%']:.3f}, 5%={adf_test[4]['5%']:.3f}, 10%={adf_test[4]['10%']:.3f}")
+
+            return adf_test, is_stationary
+
+        # Проверяем исходный ряд
+        adf_original, is_original_stationary = check_stationarity(ts)
+
+        results['original_series'] = {
+            'series': ts,
+            'adf_test': adf_original,
+            'is_stationary': is_original_stationary
+        }
+
+        # Если ряд нестационарен, применяем дифференцирование
+        stationary_series = ts.copy()
+        diff_order = 0
+        adf_stationary = adf_original
+
+        if not is_original_stationary:
+            for i in range(1, max_diffs + 1):
+                diff_series = ts.diff(i).dropna()
+                adf_test, is_stationary = check_stationarity(diff_series)
+
+                if is_stationary:
+                    stationary_series = diff_series
+                    diff_order = i
+                    adf_stationary = adf_test
+                    print(f"✓ Успешно стабилизирован после {i}-го дифференцирования")
+                    break
+                else:
+                    print(f"✗ После {i}-го дифференцирования ряд все еще нестационарен")
+
+            if diff_order == 0:
+                print("⚠ Не удалось достичь стационарности после максимального количества дифференцирований")
+                # Используем ряд после первого дифференцирования как лучший вариант
+                stationary_series = ts.diff(1).dropna()
+                diff_order = 1
+        else:
+            print("✓ Ряд стационарен, преобразование не требуется")
+
+        # Анализ сезонности
+        if hasattr(ts.index, 'month') and len(ts) >= 12:
+            monthly_stats = ts.groupby(ts.index.month).agg(['mean', 'std', 'min', 'max'])
+            month_names = ['Янв', 'Фев', 'Мар', 'Апр', 'Май', 'Июн',
+                           'Июл', 'Авг', 'Сен', 'Окт', 'Ноя', 'Дек']
+
+            # Находим месяцы с максимальной и минимальной активностью
+            max_month_idx = monthly_stats['mean'].idxmax()
+            min_month_idx = monthly_stats['mean'].idxmin()
+
+            results['seasonality_analysis'] = {
+                'monthly_stats': monthly_stats,
+                'peak_month': max_month_idx,
+                'low_month': min_month_idx,
+                'seasonal_amplitude': monthly_stats['mean'].max() - monthly_stats['mean'].min()
+            }
+        else:
+            print("Недостаточно данных для анализа сезонности")
+            results['seasonality_analysis'] = None
+
+        # Сохраняем финальные результаты
+        results['stationary_series'] = {
+            'series': stationary_series,
+            'diff_order': diff_order,
+            'adf_test': adf_stationary,
+            'is_stationary': adf_stationary[1] <= 0.05
+        }
+
+        results['analysis_summary'] = {
+            'original_observations': len(ts),
+            'stationary_observations': len(stationary_series),
+            'required_differencing': diff_order,
+            'is_final_series_stationary': adf_stationary[1] <= 0.05,
+            'final_p_value': adf_stationary[1]
+        }
+
+        return results
+
+    results = exploratory_data_analysis_ts(time_series)
+
+    def calculate_metrics(actual, predicted):
+        """Расчет метрик качества без использования sklearn"""
+        actual = np.array(actual)
+        predicted = np.array(predicted)
+
+        # MAE (Mean Absolute Error)
+        mae = np.mean(np.abs(actual - predicted))
+
+        # RMSE (Root Mean Square Error)
+        rmse = np.sqrt(np.mean((actual - predicted) ** 2))
+
+        # MAPE (Mean Absolute Percentage Error) - избегаем деления на 0
+        mask = actual != 0
+        if np.any(mask):
+            mape = np.mean(np.abs((actual[mask] - predicted[mask]) / actual[mask])) * 100
+        else:
+            mape = np.nan
+
+        return {
+            'MAE': mae,
+            'RMSE': rmse,
+            'MAPE': mape
+        }
+
+    def analyze_forecast_seasonality(forecast_series):
+        """Анализ сезонности в прогнозируемых данных"""
+
+        # Группируем по месяцам
+        monthly_forecast = forecast_series.groupby(forecast_series.index.month).mean()
+
+        # Находим пиковые и минимальные месяцы
+        peak_month = monthly_forecast.idxmax()
+        low_month = monthly_forecast.idxmin()
+
+        month_names = {
+            1: 'Январь', 2: 'Февраль', 3: 'Март', 4: 'Апрель',
+            5: 'Май', 6: 'Июнь', 7: 'Июль', 8: 'Август',
+            9: 'Сентябрь', 10: 'Октябрь', 11: 'Ноябрь', 12: 'Декабрь'
+        }
+
+        return {
+            'monthly_means': monthly_forecast,
+            'peak_month': peak_month,
+            'peak_month_name': month_names.get(peak_month, 'Неизвестно'),
+            'low_month': low_month,
+            'low_month_name': month_names.get(low_month, 'Неизвестно'),
+            'amplitude': monthly_forecast.max() - monthly_forecast.min(),
+            'total_annual_demand': forecast_series.sum()
+        }
+
+    def build_ets_forecast(step_2_output, forecast_months=12, plot_results=True):
+        """
+        Построение модели ETS для прогнозирования спроса на специалистов по ИБ
+        """
+        # Извлекаем исходные данные
+        original_series = step_2_output['original_series']['series']
+
+        # Преобразуем в pandas Series с правильным индексом datetime
+        if not isinstance(original_series.index, pd.DatetimeIndex):
+            dates = pd.to_datetime(original_series.index)
+            series_data = pd.Series(original_series.values, index=dates, name='vacancy_count')
+        else:
+            series_data = original_series.copy()
+
+        # ИСПРАВЛЕНИЕ: Устанавливаем частоту и сортируем
+        series_data = series_data.asfreq('MS').sort_index()
+
+        # Заполняем пропущенные значения
+        series_data = series_data.fillna(0)
+
+        print(f"Исходные данные: {len(series_data)} наблюдений")
+        print(f"Период данных: {series_data.index.min()} - {series_data.index.max()}")
+        print(f"Среднее количество вакансий: {series_data.mean():.2f}")
+
+        # Используем ВСЕ данные для обучения финальной модели
+        train_data = series_data
+
+        print(f"\nОбучающая выборка для прогноза: {len(train_data)} наблюдений")
+
+        try:
+            # Построение ETS модели
+            print("\nПостроение ETS модели...")
+
+            # Для небольшого количества данных используем простую модель без сезонности
+            print("Используем простую модель ETS (без сезонности) из-за малого количества данных...")
+            try:
+                model = ETSModel(
+                    train_data,
+                    error='add',
+                    trend='add',
+                    seasonal=None,
+                    damped_trend=True
+                )
+                best_model = model.fit(disp=False)
+                best_config = {'error': 'add', 'trend': 'add', 'seasonal': None, 'damped_trend': True}
+            except Exception as e:
+                print(f"Ошибка при построении модели: {e}")
+                # Пробуем еще более простую модель
+                model = ETSModel(
+                    train_data,
+                    error='add',
+                    trend=None,
+                    seasonal=None
+                )
+                best_model = model.fit(disp=False)
+                best_config = {'error': 'add', 'trend': None, 'seasonal': None}
+
+            print(f"Конфигурация модели: {best_config}")
+            print(f"AIC модели: {best_model.aic:.2f}")
+
+            # Прогноз
+            forecast_values = best_model.forecast(steps=forecast_months)
+            forecast_values_data = forecast_values.values
+
+            # Для доверительных интервалов используем симуляцию
+            n_simulations = 1000
+            try:
+                simulations = best_model.simulate(
+                    nsimulations=forecast_months,
+                    repetitions=n_simulations,
+                    anchor='end'
+                )
+                # Рассчитываем доверительные интервалы
+                lower_bound = np.percentile(simulations, 2.5, axis=1)
+                upper_bound = np.percentile(simulations, 97.5, axis=1)
+            except:
+                # Если симуляция не работает, используем приближенные доверительные интервалы
+                print("Используем приближенные доверительные интервалы")
+                std_error = np.std(forecast_values_data) * 0.5
+                lower_bound = forecast_values_data - 1.96 * std_error
+                upper_bound = forecast_values_data + 1.96 * std_error
+
+            # ИСПРАВЛЕНИЕ: Создаем правильный индекс для прогноза
+            last_date = train_data.index[-1]
+
+            # Создаем индекс прогноза с правильной частотой
+            forecast_index = pd.date_range(
+                start=last_date + pd.offsets.MonthBegin(1),  # Следующий месяц
+                periods=forecast_months,
+                freq='MS'  # Monthly Start
+            )
+
+            print(f"Последняя дата в данных: {last_date.strftime('%Y-%m-%d')}")
+            print(
+                f"Период прогноза: {forecast_index[0].strftime('%Y-%m-%d')} - {forecast_index[-1].strftime('%Y-%m-%d')}")
+
+            forecast_series = pd.Series(forecast_values_data, index=forecast_index)
+            confidence_df = pd.DataFrame({
+                'lower': lower_bound,
+                'upper': upper_bound
+            }, index=forecast_index)
+
+            # Визуализация результатов
+            if plot_results:
+                plt.figure(figsize=(14, 8))
+
+                # Основной график
+                plt.plot(train_data.index, train_data.values, label='Исторические данные', color='blue', linewidth=2)
+                plt.plot(forecast_series.index, forecast_series.values, label='Прогноз', color='red', linewidth=2)
+                plt.fill_between(
+                    forecast_series.index,
+                    confidence_df['lower'],
+                    confidence_df['upper'],
+                    color='red', alpha=0.2, label='95% доверительный интервал'
+                )
+
+                plt.title('Прогноз спроса на специалистов по ИБ (ETS модель)', fontsize=14, fontweight='bold')
+                plt.xlabel('Дата')
+                plt.ylabel('Количество вакансий')
+                plt.legend()
+                plt.grid(True, alpha=0.3)
+                plt.xticks(rotation=45)
+                plt.tight_layout()
+
+                plt.savefig(save_path)
+                print('Сохранён график:', save_path)
+                plt.close()
+
+            # Анализ сезонности в прогнозе
+            seasonal_analysis = analyze_forecast_seasonality(forecast_series)
+
+            # Формируем результаты
+            results = {
+                'model': best_model,
+                'forecast': forecast_series,
+                'confidence_intervals': confidence_df,
+                'model_summary': {
+                    'model_type': f"ETS({best_config['error'][0].upper()},{best_config['trend'][0].upper() if best_config['trend'] else 'N'},{best_config['seasonal'][0].upper() if best_config['seasonal'] else 'N'})",
+                    'aic': best_model.aic,
+                    'bic': best_model.bic,
+                    'config': best_config,
+                },
+                'test_metrics': {},
+                'seasonal_analysis': seasonal_analysis
+            }
+
+            # Вывод ключевых insights
+            print("\n" + "=" * 60)
+            print("КЛЮЧЕВЫЕ ВЫВОДЫ ДЛЯ СПЕЦИАЛИСТОВ ПО ИБ")
+            print("=" * 60)
+            print(f"Средний прогнозируемый спрос: {forecast_series.mean():.1f} вакансий/мес")
+            print(f"Пиковый месяц: {seasonal_analysis['peak_month_name']} ({forecast_series.max():.1f} вакансий)")
+            print(f"Самый низкий спрос: {seasonal_analysis['low_month_name']} ({forecast_series.min():.1f} вакансий)")
+            print(f"Сезонная амплитуда: {seasonal_analysis['amplitude']:.1f} вакансий")
+            print(f"Общий годовой спрос: {seasonal_analysis['total_annual_demand']:.0f} вакансий")
+
+            return results
+
+        except Exception as e:
+            print(f"Ошибка при построении модели: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+
+    build_ets_forecast(results)
 
 
 
@@ -963,7 +1377,7 @@ def analyze_all():
     experience_levels_plot()
     #show_fields()
     #ib_vacancies_filter()
-    forecast_cybersecurity_demand()
+    #forecast_cybersecurity_demand()
 
 
 
